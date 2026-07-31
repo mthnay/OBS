@@ -824,7 +824,11 @@
           });
         }
 
-        // Gerçek yükleme: dosyayı base64'e çevir, Apps Script'e text/plain JSON gönder
+        // Gerçek yükleme: dosyayı base64'e çevir, Apps Script'e text/plain JSON gönder.
+        // ÖNEMLİ: xhr.upload üzerine dinleyici EKLEMİYORUZ. Eklersek tarayıcı isteği
+        // "preflight" (CORS OPTIONS) gerektiren bir isteğe çevirir; Apps Script OPTIONS'a
+        // cevap veremediği için yükleme başarısız olur. Bu yüzden byte-takibi yerine
+        // ilerlemeyi akıcı biçimde simüle ediyoruz (çubuk yine dolup yeşilleşir).
         return new Promise(function (resolve, reject) {
           var reader = new FileReader();
           reader.onerror = function () { reject(new Error("read")); };
@@ -835,19 +839,27 @@
               mimeType: item.file.type || "application/octet-stream",
               data: base64
             });
+
+            // Akıcı sahte ilerleme: %90'a kadar yavaşlayarak yaklaş, yanıt gelince %100.
+            var p = 0.06;
+            onProgress(p);
+            var timer = setInterval(function () {
+              p += (0.9 - p) * 0.12 + 0.008;
+              if (p > 0.9) p = 0.9;
+              onProgress(p);
+            }, 200);
+
             var xhr = new XMLHttpRequest();
             xhr.open("POST", UPLOAD_ENDPOINT, true);
-            // text/plain → tarayıcı preflight (CORS OPTIONS) yapmaz, Apps Script sorunsuz alır
+            // text/plain + xhr.upload dinleyicisi yok → "basit istek", preflight olmaz
             xhr.setRequestHeader("Content-Type", "text/plain;charset=utf-8");
-            xhr.upload.onprogress = function (e) {
-              if (e.lengthComputable) onProgress(Math.min(0.99, e.loaded / e.total));
-            };
             xhr.onload = function () {
+              clearInterval(timer);
               var ok = false;
               try { ok = JSON.parse(xhr.responseText).ok === true; } catch (_) { ok = xhr.status >= 200 && xhr.status < 300; }
               if (ok) { onProgress(1); resolve(); } else reject(new Error("server"));
             };
-            xhr.onerror = function () { reject(new Error("network")); };
+            xhr.onerror = function () { clearInterval(timer); reject(new Error("network")); };
             xhr.send(payload);
           };
           reader.readAsDataURL(item.file);
